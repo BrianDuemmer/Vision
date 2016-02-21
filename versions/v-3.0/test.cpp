@@ -7,6 +7,7 @@
 #include <cv.h>
 #include <cxcore.h>
 #include <highgui.h>
+#include <unistd.h>
 
 
 using namespace cv;
@@ -33,9 +34,9 @@ class MyFreenectDevice : public Freenect::FreenectDevice {
 	public:
 		MyFreenectDevice(freenect_context *_ctx, int _index)
 	 		: Freenect::FreenectDevice(_ctx, _index), m_buffer_depth(FREENECT_DEPTH_11BIT),
-			m_buffer_rgb(FREENECT_VIDEO_RGB), m_gamma(2048), m_new_rgb_frame(false),
+			m_buffer_rgb(FREENECT_VIDEO_RGB), m_gamma(2048), m_new_ir_frame(false),
 			m_new_depth_frame(false), depthMat(Size(640,480),CV_16UC1),
-			rgbMat(Size(640,480), CV_8U),
+			IRMat(Size(640,480), CV_8U),
 			ownMat(Size(640,480),CV_8UC3,Scalar(0)) {
 			
 			for( unsigned int i = 0 ; i < 2048 ; i++) {
@@ -47,17 +48,17 @@ class MyFreenectDevice : public Freenect::FreenectDevice {
 		
 		// Do not call directly even in child
 		void VideoCallback(void* _rgb, uint32_t timestamp) {
-			std::cout << "RGB callback" << std::endl;
+		  //std::cout << "RGB callback" << std::endl;
 			m_rgb_mutex.lock();
 			uint8_t* rgb = static_cast<uint8_t*>(_rgb);
-			rgbMat.data = rgb;
-			m_new_rgb_frame = true;
+			IRMat.data = rgb;
+			m_new_ir_frame = true;
 			m_rgb_mutex.unlock();
 		};
 		
 		// Do not call directly even in child
 		void DepthCallback(void* _depth, uint32_t timestamp) {
-			std::cout << "Depth callback" << std::endl;
+		  //	std::cout << "Depth callback" << std::endl;
 			m_depth_mutex.lock();
 			uint16_t* depth = static_cast<uint16_t*>(_depth);
 			depthMat.data = (uchar*) depth;
@@ -67,10 +68,10 @@ class MyFreenectDevice : public Freenect::FreenectDevice {
 		
 		bool getVideo(Mat& output) {
 			m_rgb_mutex.lock();
-			if(m_new_rgb_frame) {
+			if(m_new_ir_frame) {
 			  //cv::cvtColor(rgbMat, output, CV_RGB2BGR);
-			  rgbMat.copyTo(output);
-				m_new_rgb_frame = false;
+			  IRMat.copyTo(output);
+				m_new_ir_frame = false;
 				m_rgb_mutex.unlock();
 				return true;
 			} else {
@@ -96,11 +97,11 @@ class MyFreenectDevice : public Freenect::FreenectDevice {
 		std::vector<uint8_t> m_buffer_rgb;
 		std::vector<uint16_t> m_gamma;
 		Mat depthMat;
-		Mat rgbMat;
+		Mat IRMat;
 		Mat ownMat;
 		myMutex m_rgb_mutex;
 		myMutex m_depth_mutex;
-		bool m_new_rgb_frame;
+		bool m_new_ir_frame;
 		bool m_new_depth_frame;
 };
 
@@ -113,7 +114,7 @@ int main(int argc, char **argv) {
 	
 	Mat depthMat(Size(640,480),CV_16UC1);
 	Mat depthf (Size(640,480),CV_8UC1);
-	Mat rgbMat(Size(640,480),CV_8U);
+	Mat IRMat(Size(640,480),CV_8U);
 	Mat ownMat(Size(640,480),CV_8UC3,Scalar(0));
 	
 	// The next two lines must be changed as Freenect::Freenect
@@ -126,30 +127,75 @@ int main(int argc, char **argv) {
 	Freenect::Freenect freenect;
 	MyFreenectDevice& device = freenect.createDevice<MyFreenectDevice>(0);
 	device.setVideoFormat(requested_format);
-	namedWindow("rgb",CV_WINDOW_AUTOSIZE);
+	namedWindow("IR",CV_WINDOW_AUTOSIZE);
 	namedWindow("depth",CV_WINDOW_AUTOSIZE);
 	device.startVideo();
 	device.startDepth();
 	while (!die) {
-		device.getVideo(rgbMat);
-		device.getDepth(depthMat);
-		cv::imshow("rgb", rgbMat);
-		depthMat.convertTo(depthf, CV_8UC1, 255.0/2048.0);
-		cv::imshow("depth",depthf);
-		char k = cvWaitKey(5);
-		if( k == 27 ){
-			cvDestroyWindow("rgb");
-			cvDestroyWindow("depth");
-			break;
+	  device.getVideo(IRMat);
+	  device.getDepth(depthMat);
+	  /*********Identify_Goal*************************/
+	  int maxIntensity = 0;
+	  bool valuesSet = false;
+	  int max_y, max_x, min_y, min_x;
+	  for(int x = 0; x < IRMat.cols; x++) {
+	    for(int y = 0; y < IRMat.rows; y++) {
+	      int intensity = IRMat.at<uchar>(Point(x, y));
+	      if(intensity > 250) {
+		if(intensity > maxIntensity) {
+		  maxIntensity = intensity;
+		  cout << "max intensity: " << maxIntensity << endl;
 		}
-		if( k == 8 ) {
-			std::ostringstream file;
-			file << filename << i_snap << suffix;
-			cv::imwrite(file.str(),rgbMat);
-			i_snap++;
+		if(!valuesSet && (IRMat.at<uchar>((y + 5), (x + 5)) > 250)) {
+		  max_y = y;
+		  min_y = y;
+		  max_x = x;
+		  min_x = x;
+		  valuesSet = true;
 		}
-		if(iter >= 100000) break;
-		iter++;
+		if(x < min_x && (IRMat.at<uchar>(y, (x + 5)) > 250))
+		  min_x = x;
+		if(y < min_y && (IRMat.at<uchar>((y + 5), x) > 250))
+		  min_y = y;
+		if(x > max_x && (IRMat.at<uchar>(y, (x - 5)) > 250))
+		  max_x = x;
+		if(y > max_y && (IRMat.at<uchar>((y - 5), x) > 250))
+		  max_y = y;
+	      }
+	    }
+	  }
+	  
+	  cout << endl << endl << endl;
+	  cout << "max_x = " << max_x << endl;
+	  cout << "min_x = " << min_x << endl;
+	  cout << "max_y = " << max_y << endl;
+	  cout << "min_y = " << min_y << endl;
+	  cout << endl << endl << endl;
+	  usleep(100000);
+	  /***********************************************/
+	  /*************Draw Rectangle *******************/
+	  int padding = 2;
+	  cv::Point leftTop((min_x - padding), (min_y + padding));
+	  cv::Point rightBottom((max_x + padding), (max_y - padding));
+	  cv::rectangle(IRMat, leftTop, rightBottom, 255, 1, 8);
+	  /***********************************************/
+	  cv::imshow("IR", IRMat);
+	  depthMat.convertTo(depthf, CV_8UC1, 255.0/2048.0);
+	  cv::imshow("depth",depthf);
+	  char k = cvWaitKey(5);
+	  if( k == 27 ){
+	    cvDestroyWindow("rgb");
+	    cvDestroyWindow("depth");
+	    break;
+	  }
+	  if( k == 8 ) {
+	    std::ostringstream file;
+	    file << filename << i_snap << suffix;
+	    cv::imwrite(file.str(),IRMat);
+	    i_snap++;
+	  }
+	  if(iter >= 100000) break;
+	  iter++;
 	}
 	
 	device.stopVideo();
